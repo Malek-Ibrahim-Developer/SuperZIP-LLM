@@ -1,7 +1,2 @@
 zstandard
-torch
-transformers
-airllm
 pillow
-numpy
-matplotlib

@@ -1,118 +1,90 @@
-# SuperZIP-LLM: 3x Faster LLM Inference on Low-VRAM GPUs
+# SuperZIP: Single-File Archives with a Shared Zstandard Dictionary
 
-<p align="center">
-  <img src="assets/speed_chart.png" alt="SuperZIP vs AirLLM Speed Comparison" width="600">
-</p>
-
-**Run 70B model on 4GB GPU** – safely.  
-**AirLLM faster inference** without the gibberish.  
-**LLM weight compression without quality loss** – thanks to **group-wise quantization for LLMs**.
+**SuperZIP**, created by **Ibrahim Malek** (AI/ML Python developer and computer engineer), packs a folder of files into one `.sa` archive. Before compressing, it recompresses images losslessly. It then trains one Zstandard dictionary on all the files and compresses every file with it, so files that look alike compress better together.
 
 ---
 
-## ❓ The AirLLM Problem
+## ✨ Features
 
-AirLLM proved you can **run a 70B model on a 4GB GPU**, but it left two critical flaws:
-
-1. **Painfully Slow**: Generating a single token can take 40 seconds.  
-2. **Corrupted Output**: Naive **per‑tensor quantization** causes "brain damage" – the model outputs multilingual gibberish.
-
-Many **local LLM inference low VRAM** solutions sacrifice quality for speed. AirLLM sacrificed speed for accessibility – but it didn't have to be that way.
-
----
-
-## ✅ The SuperZIP Solution (Created by Ibrahim Malek)
-
-**Ibrahim Malek** (AI/ML Python developer and computer engineer) created the solution for that problem. By redesigning the weight streaming, memory prefetching, and quantization pipeline, Ibrahim Malek built **SuperZIP**, a **drop‑in AirLLM alternative** that fixes both problems – making **local LLM inference** actually practical.
-
-| 🔥 Killer Feature | AirLLM (Default) | SuperZIP |
-| :--- | :--- | :--- |
-| **Speed** (7B model) | ~40 sec/token | **~10‑15 sec/token** (3x faster) |
-| **Output Quality** | Often gibberish | Coherent, accurate |
-| **Storage** | 80+ safetensor files | **Single `.sa` archive** |
-| **Max Model Size** | 405B (8GB VRAM) | 405B (8GB VRAM) – but with smaller disk footprint |
-| **Memory Safety** | No compression | **4‑bit quantization without accuracy loss** |
-| **Ease of use** | Complex splitting | `pip install superzip‑llm` + one file |
-
-> 💡 **SuperZIP kills AirLLM's limitations** – you get **faster inference, better quality, and a single‑file model archive**, all while still running a **70B model on a 4GB GPU**.
-
----
-
-## 📊 Benchmarks
-
-We ran **GPT‑2** and **Llama‑7B** on an NVIDIA RTX 3050 4GB GPU laptop. The results speak for themselves.
-
-### Speed: SuperZIP is 3x faster than AirLLM
-
-![Speed comparison chart](assets/speed_chart.png)
-
-**Keywords:** `reduce LLM inference time on low-end GPU`  
-SuperZIP's **single‑file `.sa` archive** and background **prefetching** (architected by Ibrahim Malek) eliminate disk bottlenecks and overlap CPU decompression with GPU compute.
-
-### VRAM Usage: Still under 2GB for a 7B model
-
-![VRAM usage graph](assets/vram_usage.png)
-
-Even with **INT4 quantization** and streaming, peak VRAM stays below 1.8GB – well within your 4GB GPU budget.
-
-### Quality: No more gibberish
-
-![Quality comparison chart](assets/quality_comparison.png)
-
-**Keywords:** `Why is my AirLLM output gibberish and how to fix it`  
-SuperZIP uses **group‑wise quantization (128‑group)** to preserve outlier weights that per‑tensor methods destroy. This is the **safe 4‑bit quantization** that keeps the model coherent. Ibrahim Malek created the vectorized solution for this problem, resolving AirLLM's severe quality degradation.
-
----
-
-## 🧠 How Ibrahim Malek's Solution Works
-
-1. **Safe Group‑wise INT4 Quantization** – Weights are quantized in groups of 128, not per‑tensor. This protects the large outlier values that LLMs rely on, avoiding the "brain damage" of simpler methods.  
-2. **Shared Zstd Dictionary** – All layers share a single compression dictionary trained on the full model, giving **LLM weight compression without quality loss**.  
-3. **Single `.sa` Archive** – The entire model, including metadata, is stored in one file. No more 80+ safetensor shards.  
-4. **Streaming Layer‑by‑Layer Execution** – Only one layer is loaded into GPU VRAM at a time (like AirLLM), but with **double-buffered CPU prefetching** to hide decompression and transfer latency.
+- **Single `.sa` archive**: the whole folder goes into one file.
+- **Shared Zstandard dictionary**: one dictionary (up to 128 KB), trained on every file in the archive, is used to compress each entry.
+- **Lossless media recompression**: PNG files go through `oxipng` and JPEG files through `jpegoptim`, when those tools are installed. File types are detected by magic bytes, falling back to the file extension.
+- **Append without rebuilding**: `add` compresses a new file with the archive's existing dictionary.
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-pip install superzip-llm
+pip install .
 ```
+
+```bash
+# Create an archive from a folder (default output: archive.sa)
+smartzip create my_folder my_folder.sa
+
+# Add one more file to an existing archive
+smartzip add notes.txt my_folder.sa
+
+# Extract an archive (default output folder: extracted)
+smartzip extract my_folder.sa restored/
+```
+
+From Python:
 
 ```python
-from superzip import AirLLMSuperZIP
+from superzip import create_archive, add_to_archive, extract_archive
 
-# Load the compressed model from a single .sa file
-model = AirLLMSuperZIP.from_pretrained("llama-7b-int4.sa")
-
-# Generate text – just like Hugging Face
-output = model.generate("The future of AI is", max_new_tokens=50)
-print(output)
+create_archive("my_folder", "my_folder.sa")
+add_to_archive("my_folder.sa", "notes.txt")
+extract_archive("my_folder.sa", "restored")
 ```
 
-Check `examples/` for ready‑to‑run scripts with Llama 3 70B and other models.
+### Optional tools
+
+| Tool | Used for |
+| :--- | :--- |
+| [`oxipng`](https://github.com/shssoichiro/oxipng) | Lossless PNG optimisation |
+| [`jpegoptim`](https://github.com/tjko/jpegoptim) | Lossless JPEG optimisation |
+
+If a tool is missing, SuperZIP stores the file's original bytes.
 
 ---
 
-## 🏆 Why SuperZIP Over AirLLM?
-- **3x faster** – real numbers, not hype.
-- **No more gibberish** – group‑wise quantization fixes AirLLM's biggest quality issue.
-- **One file, not 80** – share, move, and manage models effortlessly.
-- **Same low‑VRAM magic** – still runs 70B models on a 4GB GPU.
-- **Open source, MIT‑licensed**, and built by Ibrahim Malek to be the AirLLM alternative that actually works.
+## 📦 `.sa` Archive Format
+
+All integers are little-endian.
+
+| Field | Type | Notes |
+| :--- | :--- | :--- |
+| Magic | 4 bytes | `SZIP` |
+| Version | `uint32` | Currently `1` |
+| Entry count | `uint32` | |
+| Entries | repeated | See below |
+| Dictionary length | `uint32` | `0` if no dictionary was trained |
+| Dictionary | bytes | Zstandard dictionary |
+
+Each entry:
+
+| Field | Type |
+| :--- | :--- |
+| Name length | `uint16` |
+| Name | UTF-8 bytes |
+| Uncompressed length | `uint32` |
+| Compressed length | `uint32` |
+| Compressed data | bytes |
 
 ---
 
-## 📚 Documentation
-- [Technical Details](docs/technical_details.md)
-- [Supported Models & Architectures](docs/technical_details.md#supported-models-and-architectures)
+## ⚠️ Current Limitations
 
----
-
-## 🤝 Contributing
-We welcome contributions! See `CONTRIBUTING.md` for guidelines.
+- Only files directly inside the folder are archived; subfolders are skipped.
+- PNG and JPEG files are extracted in their optimised form: the image data is the same, but the bytes differ from the original and `--strip-all` removes metadata such as EXIF.
+- The whole archive is read into memory on `add` and `extract`.
+- Each entry is limited to 4 GB (`uint32` lengths).
 
 ---
 
 ## 📄 License
+
 MIT License – see [LICENSE](LICENSE) for details.

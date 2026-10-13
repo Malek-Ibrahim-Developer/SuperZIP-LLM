@@ -2,8 +2,8 @@
 """
 smartzip.py - Super Archive tool with shared dictionary + lossless media recompression.
 Created by Ibrahim Malek, AI/ML Python developer and computer engineer.
-Ibrahim Malek created the solution to compress model files using a shared dictionary 
-trained via Zstandard, combined with vectorized group-wise INT4 quantization.
+Ibrahim Malek created the solution to compress a folder of files into a single archive
+using a shared dictionary trained via Zstandard.
 Usage:
   python smartzip.py create <folder> [archive.sa]
   python smartzip.py add <file> <archive.sa>
@@ -93,105 +93,6 @@ def run_optimiser(filepath):
         with open(filepath, 'rb') as f:
             return f.read()
 
-# ----------------- FP32 Tensor pre-processing (Bit-plane separation) ---
-def preprocess_fp32_tensor(raw_bytes):
-    """Reorganise FP32 bytes to group sign, exponent, mantissa separately.
-    Input: raw bytes of a float32 array (length must be multiple of 4).
-    Returns: bytes that are the concatenation of all signs (packed bits), 
-             all exponents, and all mantissa bytes.
-    """
-    num_floats = len(raw_bytes) // 4
-    # Unpack as list of 32-bit ints (little-endian, same as numpy default)
-    ints = struct.unpack('<' + 'I'*num_floats, raw_bytes)
-    
-    signs = []
-    exponents = []
-    mantissas = []
-    for val in ints:
-        sign = (val >> 31) & 1
-        exp  = (val >> 23) & 0xFF
-        mant = val & 0x7FFFFF  # 23 bits
-        signs.append(sign)
-        exponents.append(exp)
-        # Convert mantissa to 3 bytes (big-endian for easier grouping)
-        mantissas.append((mant >> 16) & 0xFF)
-        mantissas.append((mant >> 8) & 0xFF)
-        mantissas.append(mant & 0xFF)
-    
-    # Pack signs into bytes (8 signs per byte)
-    sign_bytes = []
-    for i in range(0, num_floats, 8):
-        batch = signs[i:i+8]
-        byte_val = 0
-        for j, s in enumerate(batch):
-            if s:
-                byte_val |= (1 << j)
-        sign_bytes.append(byte_val)
-    
-    # Combine: first a header with num_floats (4 bytes), then sign bytes, then exponent bytes, then mantissa bytes
-    header = struct.pack('<I', num_floats)
-    return header + bytes(sign_bytes) + bytes(exponents) + bytes(mantissas)
-
-def unprocess_fp32_tensor(processed_bytes):
-    """Reverse the preprocess_fp32_tensor transformation.
-    Returns original raw float32 bytes.
-    """
-    num_floats = struct.unpack('<I', processed_bytes[:4])[0]
-    pos = 4
-    
-    sign_bytes_len = (num_floats + 7) // 8
-    sign_bytes = processed_bytes[pos:pos+sign_bytes_len]
-    pos += sign_bytes_len
-    
-    exponent_bytes = processed_bytes[pos:pos+num_floats]
-    pos += num_floats
-    
-    mantissa_bytes = processed_bytes[pos:pos+num_floats*3]
-    # Now rebuild floats
-    ints = []
-    for i in range(num_floats):
-        sign_byte = sign_bytes[i // 8]
-        sign = (sign_byte >> (i % 8)) & 1
-        exp = exponent_bytes[i]
-        m0 = mantissa_bytes[i*3]
-        m1 = mantissa_bytes[i*3+1]
-        m2 = mantissa_bytes[i*3+2]
-        mant = (m0 << 16) | (m1 << 8) | m2
-        val = (sign << 31) | (exp << 23) | mant
-        ints.append(val)
-    return struct.pack('<' + 'I'*num_floats, *ints)
-
-def fp32_to_fp16(raw_bytes):
-    """Convert raw bytes of float32 array to float16 (half precision) bytes."""
-    if len(raw_bytes) % 4 != 0:
-        raise ValueError("Invalid float32 buffer length")
-    try:
-        import numpy as np
-        arr = np.frombuffer(raw_bytes, dtype=np.float32)
-        return arr.astype(np.float16).tobytes()
-    except ImportError:
-        num = len(raw_bytes) // 4
-        fp32 = struct.unpack('<' + 'f'*num, raw_bytes)
-        fp16 = []
-        for val in fp32:
-            fp16.append(struct.pack('<e', val))
-        return b''.join(fp16)
-
-def fp16_to_fp32(fp16_bytes):
-    """Convert float16 bytes back to float32 bytes."""
-    try:
-        import numpy as np
-        arr = np.frombuffer(fp16_bytes, dtype=np.float16)
-        return arr.astype(np.float32).tobytes()
-    except ImportError:
-        num = len(fp16_bytes) // 2
-        fp32 = []
-        for i in range(num):
-            half = fp16_bytes[i*2 : i*2+2]
-            val = struct.unpack('<e', half)[0]
-            fp32.append(struct.pack('<f', val))
-        return b''.join(fp32)
-
 # ----------------- Dictionary training --------------------------------
 
 def train_dictionary(samples, max_size=128*1024):
@@ -272,36 +173,13 @@ def create_archive(input_folder, output_path):
         return
 
     # 1. Optimise
-    print("Optimising files (lossless/quantized) ...")
+    print("Optimising files (lossless) ...")
     opt_map = {}   # path -> bytes
-    is_int4_map = {} # path -> bool
     for full_path in all_files:
         base = os.path.basename(full_path)
-        is_int4 = False
-        # If it's a .bin file and not an image, apply tensor pre-processing
-        if base.lower().endswith('.bin') and not detect_type_by_magic(full_path):
-            with open(full_path, 'rb') as f:
-                raw = f.read()
-            if len(raw) % 4 == 0 and len(raw) >= 4:
-                try:
-                    try:
-                        from .quantization import quantize_fp32_to_int4_groupwise as quantize_weights
-                    except ImportError:
-                        from quantization import quantize_fp32_to_int4_groupwise as quantize_weights
-                    
-                    opt_data = quantize_weights(raw)
-                    is_int4 = True
-                    print(f"  {base}: FP32->INT4 Group-wise ({len(raw)} -> {len(opt_data)} bytes)")
-                except Exception as e:
-                    print(f"  Warning: INT4 group-wise quantization failed for {base}, using raw ({e})")
-                    opt_data = raw
-            else:
-                opt_data = raw
-        else:
-            opt_data = run_optimiser(full_path)
-            print(f"  {base}: {os.path.getsize(full_path)} -> {len(opt_data)} bytes")
+        opt_data = run_optimiser(full_path)
+        print(f"  {base}: {os.path.getsize(full_path)} -> {len(opt_data)} bytes")
         opt_map[full_path] = opt_data
-        is_int4_map[full_path] = is_int4
 
     # 2. Train dictionary
     print("\nTraining shared dictionary ...")
@@ -315,9 +193,8 @@ def create_archive(input_folder, output_path):
         base = os.path.basename(full_path)
         uncomp = opt_map[full_path]
         comp = compress_with_dict(uncomp, dict_bytes)
-        fname = base + '.int4g' if is_int4_map[full_path] else base
-        file_info.append((fname, len(uncomp), comp))
-        print(f"  {fname}: {len(uncomp)} -> {len(comp)} bytes")
+        file_info.append((base, len(uncomp), comp))
+        print(f"  {base}: {len(uncomp)} -> {len(comp)} bytes")
 
     # 4. Write container
     _write_sa(output_path, dict_bytes, file_info)
@@ -328,26 +205,10 @@ def add_to_archive(archive_path, new_file_path):
     dict_bytes, old_files = _read_sa(archive_path)
 
     base = os.path.basename(new_file_path)
-    is_fp16 = False
-    if base.lower().endswith('.bin') and not detect_type_by_magic(new_file_path):
-        with open(new_file_path, 'rb') as f:
-            raw = f.read()
-        if len(raw) % 4 == 0 and len(raw) >= 4:
-            try:
-                new_uncomp = fp32_to_fp16(raw)
-                is_fp16 = True
-                print(f"  {base}: FP32->FP16 ({len(raw)} -> {len(new_uncomp)} bytes)")
-            except Exception:
-                new_uncomp = raw
-        else:
-            new_uncomp = raw
-    else:
-        new_uncomp = run_optimiser(new_file_path)
-
+    new_uncomp = run_optimiser(new_file_path)
     new_comp = compress_with_dict(new_uncomp, dict_bytes)
-    fname = base + '.fp16' if is_fp16 else base
 
-    new_files = old_files + [(fname, len(new_uncomp), new_comp)]
+    new_files = old_files + [(base, len(new_uncomp), new_comp)]
     _write_sa(archive_path, dict_bytes, new_files)
     print(f"[SUCCESS] Added '{new_file_path}' to archive. Now contains {len(new_files)} file(s).")
 
@@ -358,19 +219,9 @@ def extract_archive(archive_path, output_folder):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     for fname, unc_len, comp_data in file_list:
-        is_fp16 = False
-        if fname.endswith('.fp16'):
-            is_fp16 = True
-            out_name = fname[:-5]
-        else:
-            out_name = fname
-            
-        print(f"Extracting: {out_name} (from {'FP16' if is_fp16 else 'original'} data)")
+        print(f"Extracting: {fname}")
         data = decompress_with_dict(comp_data, dict_bytes)
-        if is_fp16:
-            data = fp16_to_fp32(data)
-            
-        out_path = os.path.join(output_folder, out_name)
+        out_path = os.path.join(output_folder, fname)
         with open(out_path, 'wb') as f:
             f.write(data)
     print(f"[SUCCESS] Extracted {len(file_list)} file(s) to '{output_folder}'")

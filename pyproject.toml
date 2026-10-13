@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "superzip-llm"
+name = "superzip"
 version = "1.0.0"
-description = "3x faster LLM inference on low-VRAM GPUs – safe 4-bit compression, no quality loss. Run 70B models on a 4GB GPU."
+description = "Single-file archive tool with a shared Zstandard dictionary and lossless media recompression."
 authors = [
     { name = "Ibrahim Malek" }
 ]
@@ -14,12 +14,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "zstandard>=0.15.0",
-    "torch>=2.0.0",
-    "transformers>=4.30.0",
-    "airllm>=2.0.0",
-    "pillow",
-    "numpy",
-    "matplotlib"
+    "pillow"
 ]
 
 [project.scripts]
